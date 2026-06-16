@@ -1,0 +1,52 @@
+[project]
+name = "khmerfox"
+version = "2.0.0"
+description = "Compact Cambodia-focused Google Maps scraper powered by Camoufox"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "KhmerFox" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["google-maps", "scraper", "cambodia", "camoufox", "khmer"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+]
+dependencies = [
+    "camoufox[geoip]>=0.4.11",
+    "flask>=3.0.0",
+    "openpyxl>=3.1.0",
+]
+
+[project.scripts]
+kf = "khmerfox.cli:main"
+khmerfox = "khmerfox.cli:main"
+khmerfox-web = "khmerfox.web:run_web"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0", "ruff>=0.4.0"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["khmerfox*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.uv]
+python-preference = "only-managed"
