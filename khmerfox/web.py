@@ -12,7 +12,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template_string, request, send_from_directory
 
-from khmerfox.core import DATA_DIR, Config, GmapsScraper, export_places
+from khmerfox.core import AVAILABLE_FIELDS, DATA_DIR, Config, GmapsScraper, export_places
 
 app = Flask(__name__)
 
@@ -27,6 +27,7 @@ _state = {
     "finished_at": None,
     "places_found": 0,
     "places_scraped": 0,
+    "stop_event": None,
 }
 _logs: list[str] = []
 
@@ -211,6 +212,22 @@ input:focus,select:focus{
 }
 .form-row{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
 .checks{display:flex;gap:1.25rem;flex-wrap:wrap}
+.field-grid{
+  display:grid;
+  grid-template-columns:repeat(2,1fr);
+  gap:.5rem .75rem;
+  max-height:220px;
+  overflow:auto;
+  padding:.75rem;
+  background:var(--surface-2);
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+}
+@media(min-width:640px){.field-grid{grid-template-columns:repeat(3,1fr)}}
+.field-grid .check{font-size:.8125rem;margin:0}
+.field-grid .check input{width:1rem;height:1rem}
+.field-actions{display:flex;gap:.5rem;margin-top:.5rem;justify-content:flex-end}
+.field-actions button{font-size:.75rem;padding:.35rem .6rem}
 .check{
   display:flex;align-items:center;gap:.5rem;
   cursor:pointer;
@@ -242,6 +259,12 @@ input:focus,select:focus{
   border:1px solid var(--border);
 }
 .btn-secondary:hover:not(:disabled){background:var(--border)}
+.btn-danger{
+  background:var(--error);
+  color:#fff;
+  box-shadow:0 4px 14px rgba(185,28,28,.25);
+}
+.btn-danger:hover:not(:disabled){background:#991b1b;transform:translateY(-1px)}
 .btn-sm{padding:.5rem .875rem;font-size:.875rem}
 .status-panel{
   display:grid;
@@ -435,6 +458,19 @@ footer{
             <option value="all">All formats</option>
           </select>
         </div>
+        <div class="form-group">
+          <label>Output fields</label>
+          <div class="field-grid" id="fieldGrid">
+            {% for field, label, default in fields %}
+            <label class="check" title="{{ field }}"><input type="checkbox" value="{{ field }}" {% if default %}checked{% endif %}> {{ label }}</label>
+            {% endfor %}
+          </div>
+          <div class="field-actions">
+            <button type="button" class="btn btn-secondary btn-sm" id="selectAllFields">All</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="selectDefaultFields">Default</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="clearFields">None</button>
+          </div>
+        </div>
         <div class="form-row">
           <div class="form-group">
             <label for="max">Max results <span class="label-hint">(0 = unlimited)</span></label>
@@ -466,8 +502,9 @@ footer{
             <label class="check"><input type="checkbox" id="shots"> Save screenshots</label>
           </div>
         </div>
-        <div style="display:flex;gap:.75rem;margin-top:1.5rem;">
+        <div style="display:flex;gap:.75rem;margin-top:1.5rem;flex-wrap:wrap;">
           <button id="start" class="btn btn-primary">🚀 Start Scrape</button>
+          <button id="stop" class="btn btn-danger" disabled>⏹ Stop</button>
           <button id="refresh" class="btn btn-secondary btn-sm">↻ Refresh</button>
         </div>
       </div>
@@ -612,12 +649,16 @@ async function fetchStatus(){
     $('progressTime').textContent='Elapsed '+formatDuration(Date.now()-startedAt);
     $('start').disabled=true;
     $('start').innerHTML='<span class="spinner"></span> Running';
+    $('stop').disabled=false;
+    $('stop').innerHTML='⏹ Stop';
   }else if(d.error){
     setStatus('err','Error: '+d.error);
     setProgress(0,false);
     $('progressTime').textContent='Failed';
     $('start').disabled=false;
     $('start').innerHTML='🚀 Start Scrape';
+    $('stop').disabled=true;
+    $('stop').innerHTML='⏹ Stop';
     stopPolling();
     if(d.logs && d.logs.length!==lastLogCount) toast('Scrape failed','error');
   }else if(d.finished_at){
@@ -626,6 +667,8 @@ async function fetchStatus(){
     $('progressTime').textContent='Finished';
     $('start').disabled=false;
     $('start').innerHTML='🚀 Start Scrape';
+    $('stop').disabled=true;
+    $('stop').innerHTML='⏹ Stop';
     stopPolling();
     if(d.logs && d.logs.length!==lastLogCount) toast('Scrape complete!','success');
     loadResults();
@@ -635,6 +678,8 @@ async function fetchStatus(){
     $('progressTime').textContent='—';
     $('start').disabled=false;
     $('start').innerHTML='🚀 Start Scrape';
+    $('stop').disabled=true;
+    $('stop').innerHTML='⏹ Stop';
   }
 
   if(d.logs){
@@ -675,9 +720,27 @@ function escapeHtml(s){
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+function getSelectedFields(){
+  return Array.from($('fieldGrid').querySelectorAll('input:checked')).map(i=>i.value);
+}
+
+$('selectAllFields').onclick=()=>{
+  $('fieldGrid').querySelectorAll('input').forEach(i=>i.checked=true);
+};
+$('selectDefaultFields').onclick=()=>{
+  $('fieldGrid').querySelectorAll('input').forEach(i=>{
+    i.checked=i.getAttribute('checked')==='checked';
+  });
+};
+$('clearFields').onclick=()=>{
+  $('fieldGrid').querySelectorAll('input').forEach(i=>i.checked=false);
+};
+
 $('start').onclick=async()=>{
   const q=$('q').value.trim();
   if(!q){toast('Please enter a search query','error');$('q').focus();return;}
+  const selectedFields=getSelectedFields();
+  if(!selectedFields.length){toast('Please select at least one output field','error');return;}
   $('logs').innerHTML='';
   lastLogCount=0;
   startedAt=null;
@@ -685,6 +748,7 @@ $('start').onclick=async()=>{
   setProgress(0,false);
   $('start').disabled=true;
   $('start').innerHTML='<span class="spinner"></span> Starting...';
+  $('stop').disabled=false;
   const r=await fetch('/scrape',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
@@ -696,7 +760,8 @@ $('start').onclick=async()=>{
       log_level:$('log').value,
       proxy:$('proxy').value.trim(),
       headless:$('headless').checked,
-      screenshots:$('shots').checked
+      screenshots:$('shots').checked,
+      fields:selectedFields
     })
   });
   if(!r.ok){
@@ -709,6 +774,18 @@ $('start').onclick=async()=>{
   }
   toast('Scrape started','info');
   startPolling();
+};
+
+$('stop').onclick=async()=>{
+  $('stop').disabled=true;
+  $('stop').innerHTML='<span class="spinner"></span> Stopping...';
+  try{
+    const r=await fetch('/stop',{method:'POST'});
+    const d=await r.json();
+    toast(d.status==='stopping'?'Scrape stopping...':'No scrape running','info');
+  }catch(e){
+    toast('Failed to send stop signal','error');
+  }
 };
 
 $('refresh').onclick=()=>{loadResults();toast('Results refreshed','success');};
@@ -746,6 +823,7 @@ def _reset_state(config: Config):
                 "finished_at": None,
                 "places_found": 0,
                 "places_scraped": 0,
+                "stop_event": asyncio.Event(),
             }
         )
         _logs.clear()
@@ -776,12 +854,15 @@ async def _worker(config: Config):
         with _lock:
             _state["places_scraped"] += 1
 
+    with _lock:
+        stop_event = _state.get("stop_event")
+
     try:
-        places = await GmapsScraper(config, progress_callback=bump).run()
+        places = await GmapsScraper(config, progress_callback=bump, stop_event=stop_event).run()
         with _lock:
             _state["places_found"] = len(places)
             _state["places_scraped"] = len(places)
-        paths = export_places(places, config.query, config.output_format)
+        paths = export_places(places, config.query, config.output_format, config.fields)
         _finish(paths=paths)
     except Exception as exc:
         logging.exception("Scrape failed")
@@ -792,7 +873,18 @@ async def _worker(config: Config):
 
 @app.route("/")
 def index():
-    return render_template_string(HTML)
+    return render_template_string(HTML, fields=AVAILABLE_FIELDS)
+
+
+@app.route("/stop", methods=["POST"])
+def stop_scrape():
+    with _lock:
+        if not _state["running"]:
+            return jsonify({"status": "not running"}), 200
+        event = _state.get("stop_event")
+        if event:
+            event.set()
+        return jsonify({"status": "stopping"}), 200
 
 
 @app.route("/scrape", methods=["POST"])
@@ -811,6 +903,11 @@ def start_scrape():
             return v
         return str(v).lower() in {"true", "1", "yes", "on"}
 
+    raw_fields = data.get("fields")
+    fields = None
+    if isinstance(raw_fields, list) and raw_fields:
+        fields = [str(f).strip() for f in raw_fields if str(f).strip()]
+
     config = Config(
         query=query,
         territory=data.get("territory", "Cambodia").strip(),
@@ -821,6 +918,7 @@ def start_scrape():
         concurrency=min(int(data.get("concurrency", 4) or 4), 8),
         proxy=data.get("proxy", "").strip(),
         screenshots=as_bool(data.get("screenshots", False)),
+        fields=fields,
     )
 
     threading.Thread(target=lambda: asyncio.run(_worker(config)), daemon=True).start()
@@ -831,6 +929,8 @@ def start_scrape():
 def status():
     with _lock:
         payload = dict(_state)
+        # stop_event is an asyncio.Event and not JSON serializable
+        payload.pop("stop_event", None)
         if payload.get("config"):
             payload["config"] = asdict(payload["config"])
         payload["logs"] = _logs[-250:]

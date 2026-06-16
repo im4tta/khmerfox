@@ -41,7 +41,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--scroll-delay", type=float, default=1.0)
     p.add_argument("--page-delay", type=float, default=1.0)
     p.add_argument("--retries", type=int, default=1)
+    p.add_argument(
+        "--fields",
+        default="",
+        help="Comma-separated output fields (default: core set). Use 'all' for every field.",
+    )
     return p
+
+
+def _parse_fields(text: str) -> list[str] | None:
+    if not text:
+        return None
+    if text.strip().lower() == "all":
+        from khmerfox.core import OUTPUT_FIELDS
+        return list(OUTPUT_FIELDS)
+    return [f.strip() for f in text.split(",") if f.strip()]
 
 
 def config_from_args(args: argparse.Namespace) -> Config:
@@ -59,6 +73,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
         proxy=args.proxy,
         screenshots=args.screenshots,
         session_name=args.session,
+        fields=_parse_fields(args.fields),
     )
 
 
@@ -72,7 +87,7 @@ async def run_async(config: Config) -> int:
     if not places:
         logging.warning("No places collected")
         return 1
-    paths = export_places(places, config.query, config.output_format)
+    paths = export_places(places, config.query, config.output_format, config.fields)
     for path in paths:
         print(f"Saved: {path}")
     return 0
