@@ -645,35 +645,26 @@ async def extract_place(page, url: str, territory: str) -> Place:
         place.thumbnail = ""
 
     try:
-        # A visible "Claim this business" link is the only reliable UI signal we can scrape.
-        # Absence of the link does NOT prove the business is claimed, so default to unknown.
-        unclaimed_selectors = [
-            'a:has-text("Claim this business")',
-            'button:has-text("Claim this business")',
-            '[role="button"]:has-text("Claim this business")',
-        ]
-        unclaimed_found = False
-        for sel in unclaimed_selectors:
-            if await page.locator(sel).count() > 0:
-                unclaimed_found = True
-                break
-        if unclaimed_found:
-            place.claimed = "No"
-        else:
-            # Look for owner/claimed indicators
-            claimed_signals = [
-                ':has-text("Managed by business owner")',
-                ':has-text("Business owner")',
-                ':has-text("Owner response")',
-                ':has-text("Your business")',
-                ':has-text("Manage this business")',
-            ]
-            claimed_found = False
-            for sel in claimed_signals:
-                if await page.locator(sel).count() > 0:
-                    claimed_found = True
-                    break
-            place.claimed = "Yes" if claimed_found else ""
+        # Scan visible text and labels for unclaimed/claimed signals.
+        claim_state = await page.evaluate(
+            r"""() => {
+                const text = document.body.innerText || '';
+                const labels = Array.from(document.querySelectorAll('[aria-label]'))
+                    .map(el => el.getAttribute('aria-label')).join(' ');
+                const all = text + ' ' + labels;
+                // "Claim this business" in several languages; add more as needed
+                const unclaimed = /Claim this business|អះអាង[\s\u200b-\u200d]*ពាណិជ្ជកម្ម[\s\u200b-\u200d]*នេះ|Reclamar este negocio|Gérer cette fiche|认领此商家|Xác nhận doanh nghiệp này/i.test(all);
+                const claimed = /Managed by business owner|Business owner|Owner response|Your business|Manage this business|Verified by business owner/i.test(all);
+                return unclaimed ? 'No' : claimed ? 'Yes' : '';
+            }"""
+        )
+        place.claimed = str(claim_state or "")
+        # Final fallback: look for isClaimed in page JSON
+        if not place.claimed and content:
+            if re.search(r'"isClaimed"\s*:\s*(?:true|1)', content, re.IGNORECASE):
+                place.claimed = "Yes"
+            elif re.search(r'"isClaimed"\s*:\s*(?:false|0)', content, re.IGNORECASE):
+                place.claimed = "No"
     except Exception:
         place.claimed = ""
 
