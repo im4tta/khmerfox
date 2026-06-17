@@ -9,161 +9,81 @@ import datetime
 import json
 import logging
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, make_dataclass
+from dataclasses import field as dc_field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import openpyxl
 from camoufox.async_api import AsyncCamoufox
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT / "data"
-SESSIONS_DIR = ROOT / "sessions"
-SCREENSHOTS_DIR = ROOT / "screenshots"
+DATA_DIR, SESSIONS_DIR, SCREENSHOTS_DIR = (ROOT / d for d in ("data", "sessions", "screenshots"))
 for _d in (DATA_DIR, SESSIONS_DIR, SCREENSHOTS_DIR):
     _d.mkdir(exist_ok=True)
 
-OUTPUT_FIELDS = [
-    "place_id",
-    "name",
-    "name_kh",
-    "name_en",
-    "rating",
-    "reviews",
-    "category",
-    "categories",
-    "features",
-    "address",
-    "fulladdr",
-    "local_name",
-    "local_fulladdr",
-    "addr1",
-    "addr2",
-    "addr3",
-    "addr4",
-    "district",
-    "phone",
-    "phone_number",
-    "international_phone_number",
-    "phone_numbers",
-    "website",
-    "url",
-    "domain",
-    "hours",
-    "price_level",
-    "plus_code",
-    "latitude",
-    "longitude",
-    "maps_url",
-    "listing_url",
-    "thumbnail",
-    "reviews_url",
-    "claimed",
-    "fid",
-    "cid",
-    "timezone",
-    "query",
-    "created_at",
+# Single source of truth: (field_name, label, default_selected)
+_FIELD_DEFS: list[tuple[str, str, bool]] = [
+    ("place_id",                   "Place ID",              True),
+    ("name",                       "Name",                  True),
+    ("name_kh",                    "Name (Khmer)",          True),
+    ("name_en",                    "Name (English)",        True),
+    ("rating",                     "Rating",                True),
+    ("reviews",                    "Reviews",               True),
+    ("category",                   "Primary Category",      True),
+    ("categories",                 "Categories",            False),
+    ("features",                   "Features",              False),
+    ("address",                    "Address",               True),
+    ("fulladdr",                   "Full Address",          False),
+    ("local_name",                 "Local Name",            False),
+    ("local_fulladdr",             "Local Full Address",    False),
+    ("addr1",                      "Address Line 1",        False),
+    ("addr2",                      "Address Line 2",        False),
+    ("addr3",                      "Address Line 3",        False),
+    ("addr4",                      "Address Line 4",        False),
+    ("district",                   "District",              False),
+    ("phone",                      "Phone",                 True),
+    ("phone_number",               "Phone Number",          False),
+    ("international_phone_number", "International Phone",   False),
+    ("phone_numbers",              "Phone Numbers",         False),
+    ("website",                    "Website",               True),
+    ("url",                        "URL",                   False),
+    ("domain",                     "Domain",                False),
+    ("hours",                      "Hours",                 True),
+    ("price_level",                "Price Level",           True),
+    ("plus_code",                  "Plus Code",             True),
+    ("latitude",                   "Latitude",              True),
+    ("longitude",                  "Longitude",             True),
+    ("maps_url",                   "Maps URL",              True),
+    ("listing_url",                "Listing URL",           False),
+    ("thumbnail",                  "Thumbnail",             False),
+    ("reviews_url",                "Reviews URL",           False),
+    ("claimed",                    "Claimed",               False),
+    ("fid",                        "FID",                   False),
+    ("cid",                        "CID",                   False),
+    ("timezone",                   "Timezone",              False),
+    ("query",                      "Query",                 False),
+    ("created_at",                 "Created At",            False),
 ]
 
-# Metadata for UI checkboxes: (field, label, default_selected)
-AVAILABLE_FIELDS = [
-    ("place_id", "Place ID", True),
-    ("name", "Name", True),
-    ("name_kh", "Name (Khmer)", True),
-    ("name_en", "Name (English)", True),
-    ("rating", "Rating", True),
-    ("reviews", "Reviews", True),
-    ("category", "Primary Category", True),
-    ("categories", "Categories", False),
-    ("features", "Features", False),
-    ("address", "Address", True),
-    ("fulladdr", "Full Address", False),
-    ("local_name", "Local Name", False),
-    ("local_fulladdr", "Local Full Address", False),
-    ("addr1", "Address Line 1", False),
-    ("addr2", "Address Line 2", False),
-    ("addr3", "Address Line 3", False),
-    ("addr4", "Address Line 4", False),
-    ("district", "District", False),
-    ("phone", "Phone", True),
-    ("phone_number", "Phone Number", False),
-    ("international_phone_number", "International Phone", False),
-    ("phone_numbers", "Phone Numbers", False),
-    ("website", "Website", True),
-    ("url", "URL", False),
-    ("domain", "Domain", False),
-    ("hours", "Hours", True),
-    ("price_level", "Price Level", True),
-    ("plus_code", "Plus Code", True),
-    ("latitude", "Latitude", True),
-    ("longitude", "Longitude", True),
-    ("maps_url", "Maps URL", True),
-    ("listing_url", "Listing URL", False),
-    ("thumbnail", "Thumbnail", False),
-    ("reviews_url", "Reviews URL", False),
-    ("claimed", "Claimed", False),
-    ("fid", "FID", False),
-    ("cid", "CID", False),
-    ("timezone", "Timezone", False),
-    ("query", "Query", False),
-    ("created_at", "Created At", False),
-]
+OUTPUT_FIELDS: list[str] = [f for f, _, _ in _FIELD_DEFS]
+AVAILABLE_FIELDS: list[tuple[str, str, bool]] = _FIELD_DEFS
 
 CAMBODIA_DEFAULT_QUERY = "ហាងកាហ្វេនៅភ្នំពេញ"
 
 
-@dataclass(slots=True)
-class Place:
-    """A single Google Maps place."""
+def _place_to_dict(self, fields: list[str] | None = None) -> dict[str, str]:
+    data = asdict(self)
+    return {f: data.get(f, "") for f in fields if f in data} if fields else data
 
-    place_id: str = ""
-    name: str = ""
-    name_kh: str = ""
-    name_en: str = ""
-    rating: str = ""
-    reviews: str = ""
-    category: str = ""
-    primary_category: str = ""
-    categories: str = ""
-    features: str = ""
-    address: str = ""
-    fulladdr: str = ""
-    local_name: str = ""
-    local_fulladdr: str = ""
-    addr1: str = ""
-    addr2: str = ""
-    addr3: str = ""
-    addr4: str = ""
-    district: str = ""
-    phone: str = ""
-    phone_number: str = ""
-    international_phone_number: str = ""
-    phone_numbers: str = ""
-    website: str = ""
-    url: str = ""
-    domain: str = ""
-    hours: str = ""
-    price_level: str = ""
-    plus_code: str = ""
-    latitude: str = ""
-    longitude: str = ""
-    maps_url: str = ""
-    listing_url: str = ""
-    thumbnail: str = ""
-    reviews_url: str = ""
-    claimed: str = ""
-    fid: str = ""
-    cid: str = ""
-    timezone: str = ""
-    query: str = ""
-    created_at: str = ""
 
-    def to_dict(self, fields: list[str] | None = None) -> dict[str, str]:
-        data = asdict(self)
-        if fields:
-            return {f: data.get(f, "") for f in fields if f in data}
-        return data
+Place = make_dataclass(
+    "Place",
+    [(f, str, dc_field(default="")) for f in OUTPUT_FIELDS + ["primary_category"]],
+    slots=True,
+    namespace={"__doc__": "A single Google Maps place.", "to_dict": _place_to_dict},
+)
 
 
 @dataclass(slots=True)
@@ -214,7 +134,6 @@ def split_name(name: str) -> tuple[str, str]:
         return name.strip(), ""
     if has_latin(name) and not has_khmer(name):
         return "", name.strip()
-    # Mixed: try to separate by script blocks
     parts = re.split(r"(?<=[\u1780-\u17FF])\s+(?=[A-Za-z])|(?<=[A-Za-z])\s+(?=[\u1780-\u17FF])", name)
     kh = " ".join(p for p in parts if has_khmer(p)).strip()
     en = " ".join(p for p in parts if has_latin(p)).strip()
@@ -254,10 +173,8 @@ def parse_reviews(text: str) -> str:
     if not text:
         return ""
     text = text.lower()
-    # Match "123 reviews" or "(123)"
     if m := re.search(r"[\d,]+(?=\s*review|\s*\))", text):
         return m.group(0).replace(",", "")
-    # "123" alone is ambiguous (could be rating), so require review keyword nearby
     if "review" in text and (m := re.search(r"[\d,]+", text)):
         return m.group(0).replace(",", "")
     return ""
@@ -267,10 +184,8 @@ def pick_reviews_count(candidates: list[str], rating: str = "") -> str:
     """Pick the most likely review count from a list of candidate texts."""
     rating_norm = rating.replace(",", "").strip()
     for text in candidates:
-        parsed = parse_reviews(text)
-        if parsed and parsed != rating_norm:
+        if (parsed := parse_reviews(text)) and parsed != rating_norm:
             return parsed
-    # Fallback: any integer that is not the rating and looks like a count (>5 or > rating)
     for text in candidates:
         if m := re.search(r"[\d,]+", text):
             num = m.group(0).replace(",", "")
@@ -287,13 +202,12 @@ def extract_reviews_count(page_content: str) -> str:
     """Try to extract review count from embedded JSON in the page."""
     if not page_content:
         return ""
-    patterns = (
+    for pat in (
         r'"reviewCount"[:\s]+(\d+)',
         r'"review_count"[:\s]+"?(\d+)"?',
         r'"userRatingCount"[:\s]+(\d+)',
         r'"rating"[^}]*"count"[:\s]+(\d+)',
-    )
-    for pat in patterns:
+    ):
         if m := re.search(pat, page_content):
             return m.group(1)
     return ""
@@ -303,15 +217,12 @@ def extract_hours_from_features(features: str) -> str:
     """Try to recover hours text from the noisy features string."""
     if not features:
         return ""
-    # Day name signals in Khmer and English
     day_signals = (
         "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
         "អាទិត្យ", "ច័ន្ទ", "អង្គារ", "ពុធ", "ព្រហស្បតិ៍", "សុក្រ", "សៅរ៍",
-        "\u1794\u17be\u1780",  # បើក (Open)
-        "Open", "Closed",
+        "\u1794\u17be\u1780", "Open", "Closed",
     )
     parts = [p.strip() for p in features.split(";") if p.strip()]
-    # Prefer the last part that looks like hours
     for part in reversed(parts):
         if any(s in part for s in day_signals):
             return part
@@ -321,11 +232,8 @@ def extract_hours_from_features(features: str) -> str:
 def derive_domain(url: str) -> str:
     if not url:
         return ""
-    url = url.strip()
     if "://" not in url:
         url = "http://" + url
-    from urllib.parse import urlparse
-
     try:
         netloc = urlparse(url).netloc
         return netloc.removeprefix("www.") if netloc else ""
@@ -352,16 +260,13 @@ def parse_address_parts(address: str) -> dict[str, str]:
     chunks = [c.strip() for c in address.split(",") if c.strip()]
     for i, chunk in enumerate(chunks[:4]):
         parts[f"addr{i + 1}"] = chunk
-    # Last chunk is often province/country; second-to-last may be district/khan
     if len(chunks) >= 2:
         parts["district"] = chunks[-2]
     return parts
 
 
 def build_reviews_url(place_id: str) -> str:
-    if not place_id:
-        return ""
-    return f"https://www.google.com/maps/place/?q=place_id:{place_id}"
+    return f"https://www.google.com/maps/place/?q=place_id:{place_id}" if place_id else ""
 
 
 def extract_fid_cid(url: str, page_content: str = "") -> tuple[str, str]:
@@ -373,7 +278,6 @@ def extract_fid_cid(url: str, page_content: str = "") -> tuple[str, str]:
     if m := re.search(r"[!&]cid[=:](\d+)", text):
         cid = m.group(1)
     if not cid and (m := re.search(r"0x([0-9a-f]+):0x([0-9a-f]+)", text)):
-        # The second hex block is often used as a cid-like value
         cid = str(int(m.group(2), 16))
     return fid, cid
 
@@ -382,15 +286,14 @@ def slugify(query: str) -> str:
     return re.sub(r"[-\s]+", "_", re.sub(r"[^\w\s-]", "", query.lower())).strip("_-")
 
 
-def _place_key(place: Place) -> str:
-    """Return a stable key for duplicate detection."""
+def _place_key(place) -> str:
     return place.place_id.strip() or place.maps_url.strip() or place.name.strip()
 
 
-def dedupe_places(places: list[Place]) -> list[Place]:
+def dedupe_places(places: list) -> list:
     """Remove duplicate places, keeping the first occurrence."""
     seen: set[str] = set()
-    unique: list[Place] = []
+    unique: list = []
     for p in places:
         key = _place_key(p)
         if not key or key in seen:
@@ -398,6 +301,62 @@ def dedupe_places(places: list[Place]) -> list[Place]:
         seen.add(key)
         unique.append(p)
     return unique
+
+
+# --- selectors (module-level) ------------------------------------------------
+
+_SEL: dict[str, list[tuple[str, str]]] = {
+    "name": [
+        ("h1.DUwDvf", "text"), ("h1", "text"), ('[data-item-id="title"]', "text"),
+    ],
+    "rating": [
+        ('div.F7nice span[aria-hidden="true"]', "text"),
+        ("span[aria-hidden='true']", "text"),
+        ('button[aria-label*="star"]', "aria-label"),
+    ],
+    "reviews": [
+        ('div.F7nice span[aria-label*="reviews"]', "aria-label"),
+        ('div.F7nice button[aria-label*="reviews"]', "aria-label"),
+        ("div.F7nice span", "text"),
+        ('button[aria-label*="reviews"]', "aria-label"),
+        ('a[aria-label*="reviews"]', "aria-label"),
+    ],
+    "category": [
+        ("button.DkEaL", "text"),
+        ('button[jsaction*="pane.rating"]', "text"),
+        ('[jsaction*="pane.rating"]', "text"),
+    ],
+    "address": [
+        ('button[data-item-id="address"] div.fontBodyMedium', "text"),
+        ('[data-item-id="address"]', "text"),
+        ('button[data-tooltip="Copy address"]', "text"),
+    ],
+    "phone": [
+        ('button[data-item-id*="phone"] div.fontBodyMedium', "text"),
+        ('[data-item-id*="phone"]', "text"),
+        ('button[data-tooltip="Copy phone number"]', "text"),
+    ],
+    "website": [
+        ('a[data-item-id="authority"]', "href"),
+        ('[data-item-id="authority"]', "href"),
+        ('a[data-tooltip="Open website"]', "href"),
+    ],
+    "hours": [
+        ("div.t39EBf.GUrTXd[aria-label]", "aria-label"),
+        ('[aria-label*="Hours"][aria-label*="day"]', "aria-label"),
+        ('button[aria-label*="Hours"]', "aria-label"),
+    ],
+    "price_level": [
+        ("span.mgr77e span[aria-label]", "text"),
+        ('span[aria-label*="Price"]', "aria-label"),
+        ('span[aria-label*="price"]', "aria-label"),
+    ],
+    "plus_code": [
+        ('button[data-item-id="oloc"] div.fontBodyMedium', "text"),
+        ('[data-item-id="oloc"]', "text"),
+        ('button[data-tooltip="Copy plus code"]', "text"),
+    ],
+}
 
 
 # --- extraction --------------------------------------------------------------
@@ -412,69 +371,13 @@ async def accept_cookies(page) -> None:
         pass
 
 
-async def extract_place(page, url: str, territory: str) -> Place:
+async def extract_place(page, url: str, territory: str) -> Any:
     place = Place()
     content = ""
     with contextlib.suppress(Exception):
         content = await page.content()
 
-    # Primary selectors with fallback chains for resilience against UI changes.
-    selector_chains: dict[str, list[tuple[str, str]]] = {
-        "name": [
-            ("h1.DUwDvf", "text"),
-            ("h1", "text"),
-            ('[data-item-id="title"]', "text"),
-        ],
-        "rating": [
-            ('div.F7nice span[aria-hidden="true"]', "text"),
-            ("span[aria-hidden='true']", "text"),
-            ('button[aria-label*="star"]', "aria-label"),
-        ],
-        "reviews": [
-            ('div.F7nice span[aria-label*="reviews"]', "aria-label"),
-            ('div.F7nice button[aria-label*="reviews"]', "aria-label"),
-            ('div.F7nice span', "text"),
-            ('button[aria-label*="reviews"]', "aria-label"),
-            ('a[aria-label*="reviews"]', "aria-label"),
-        ],
-        "category": [
-            ("button.DkEaL", "text"),
-            ('button[jsaction*="pane.rating"]', "text"),
-            ("[jsaction*=\"pane.rating\"]", "text"),
-        ],
-        "address": [
-            ('button[data-item-id="address"] div.fontBodyMedium', "text"),
-            ('[data-item-id="address"]', "text"),
-            ('button[data-tooltip="Copy address"]', "text"),
-        ],
-        "phone": [
-            ('button[data-item-id*="phone"] div.fontBodyMedium', "text"),
-            ('[data-item-id*="phone"]', "text"),
-            ('button[data-tooltip="Copy phone number"]', "text"),
-        ],
-        "website": [
-            ('a[data-item-id="authority"]', "href"),
-            ('[data-item-id="authority"]', "href"),
-            ('a[data-tooltip="Open website"]', "href"),
-        ],
-        "hours": [
-            ("div.t39EBf.GUrTXd[aria-label]", "aria-label"),
-            ('[aria-label*="Hours"][aria-label*="day"]', "aria-label"),
-            ('button[aria-label*="Hours"]', "aria-label"),
-        ],
-        "price_level": [
-            ('span.mgr77e span[aria-label]', "text"),
-            ('span[aria-label*="Price"]', "aria-label"),
-            ('span[aria-label*="price"]', "aria-label"),
-        ],
-        "plus_code": [
-            ('button[data-item-id="oloc"] div.fontBodyMedium', "text"),
-            ('[data-item-id="oloc"]', "text"),
-            ('button[data-tooltip="Copy plus code"]', "text"),
-        ],
-    }
-
-    async def _try_selectors(chains: list[tuple[str, str]]) -> str:
+    async def _try(chains: list[tuple[str, str]]) -> str:
         for sel, attr in chains:
             try:
                 loc = page.locator(sel)
@@ -491,8 +394,8 @@ async def extract_place(page, url: str, territory: str) -> Place:
         return ""
 
     data: dict[str, str] = {}
-    for field, chains in selector_chains.items():
-        data[field] = await _try_selectors(chains)
+    for field, chains in _SEL.items():
+        data[field] = await _try(chains)
 
     place.name = data["name"]
     place.name_kh, place.name_en = split_name(place.name)
@@ -505,21 +408,18 @@ async def extract_place(page, url: str, territory: str) -> Place:
     place.hours = data["hours"]
     place.price_level = data["price_level"]
     place.plus_code = data["plus_code"]
-
-    # hours sometimes lives inside the features blob
     if not place.hours:
         place.hours = extract_hours_from_features(place.features)
     place.maps_url = url
     place.listing_url = url
     place.place_id = extract_place_id(url, content)
     place.latitude, place.longitude = extract_coords(url)
-
     if not place.name_kh and has_khmer(place.name):
         place.name_kh = place.name
     if not place.name_en and has_latin(place.name):
         place.name_en = place.name
 
-    # Alias / derived fields
+    # Aliases / derived fields
     place.fulladdr = place.address
     place.local_name = place.name_kh
     place.local_fulladdr = place.address
@@ -531,15 +431,12 @@ async def extract_place(page, url: str, territory: str) -> Place:
     place.domain = derive_domain(place.website)
     place.reviews_url = build_reviews_url(place.place_id)
     place.fid, place.cid = extract_fid_cid(url, content)
+    addr = parse_address_parts(place.address)
+    place.addr1, place.addr2, place.addr3, place.addr4, place.district = (
+        addr["addr1"], addr["addr2"], addr["addr3"], addr["addr4"], addr["district"],
+    )
 
-    addr_parts = parse_address_parts(place.address)
-    place.addr1 = addr_parts["addr1"]
-    place.addr2 = addr_parts["addr2"]
-    place.addr3 = addr_parts["addr3"]
-    place.addr4 = addr_parts["addr4"]
-    place.district = addr_parts["district"]
-
-    # Best-effort extraction of additional structured data
+    # Categories
     try:
         cat_locs = page.locator("button.DkEaL")
         cats = []
@@ -551,27 +448,21 @@ async def extract_place(page, url: str, territory: str) -> Place:
     except Exception:
         place.categories = place.category
 
-    # Dedicated reviews extraction: collect candidates from the rating block
+    # Reviews fallback chain
     if not place.reviews:
         try:
-            review_candidates: list[str] = []
-            for sel in (
-                'div.F7nice span',
-                'div.F7nice button',
-                'div.F7nice a',
-            ):
+            candidates: list[str] = []
+            for sel in ("div.F7nice span", "div.F7nice button", "div.F7nice a"):
                 locs = page.locator(sel)
-                count = await locs.count()
-                for i in range(min(count, 10)):
+                for i in range(min(await locs.count(), 10)):
                     with contextlib.suppress(Exception):
-                        txt = (await locs.nth(i).text_content() or "").strip()
-                        if txt and txt not in review_candidates:
-                            review_candidates.append(txt)
-            place.reviews = pick_reviews_count(review_candidates, place.rating)
+                        if txt := (await locs.nth(i).text_content() or "").strip():
+                            if txt not in candidates:
+                                candidates.append(txt)
+            place.reviews = pick_reviews_count(candidates, place.rating)
         except Exception:
             pass
     if not place.reviews:
-        # Final fallback: scan the DOM with JS for a reviews pattern
         try:
             reviews_js = await page.evaluate(
                 """() => {
@@ -590,7 +481,7 @@ async def extract_place(page, url: str, territory: str) -> Place:
     if not place.reviews:
         place.reviews = extract_reviews_count(content)
 
-    # Final hours fallback: scan DOM for an element whose aria-label contains day names
+    # Hours fallback
     if not place.hours:
         try:
             hours_js = await page.evaluate(
@@ -607,8 +498,11 @@ async def extract_place(page, url: str, territory: str) -> Place:
         except Exception:
             pass
 
+    # Features
     try:
-        feat_locs = page.locator('div[role="region"] div.fontBodyMedium, div[role="region"] span.fontBodyMedium')
+        feat_locs = page.locator(
+            'div[role="region"] div.fontBodyMedium, div[role="region"] span.fontBodyMedium'
+        )
         feats = []
         for i in range(min(await feat_locs.count(), 20)):
             with contextlib.suppress(Exception):
@@ -618,48 +512,42 @@ async def extract_place(page, url: str, territory: str) -> Place:
     except Exception:
         place.features = ""
 
+    # Thumbnail
     try:
-        thumb_selectors = [
-            'button[data-photo-index="0"] img',
-            'img[class*="photo"]',
-            'img[src*="googleusercontent"]',
-            'img[class*="image"]',
-        ]
-        for sel in thumb_selectors:
+        for sel in (
+            'button[data-photo-index="0"] img', 'img[class*="photo"]',
+            'img[src*="googleusercontent"]', 'img[class*="image"]',
+        ):
             loc = page.locator(sel).first
             if await loc.count() > 0:
-                src = (await loc.get_attribute("src") or "").strip()
-                if src:
+                if src := (await loc.get_attribute("src") or "").strip():
                     place.thumbnail = src
                     break
-        # Fallback: background-image on hero divs
         if not place.thumbnail:
             for sel in ('button[data-photo-index="0"]', '[role="img"]', 'div[style*="background-image"]'):
                 loc = page.locator(sel).first
                 if await loc.count() > 0:
                     style = (await loc.get_attribute("style") or "").strip()
-                    if m := re.search(r'url\(["\']?(https?://[^"\')]+)', style):
+                    if m := re.search(r"""url\(["']?(https?://[^"')]+)""", style):
                         place.thumbnail = m.group(1)
                         break
     except Exception:
         place.thumbnail = ""
 
+    # Claimed
     try:
-        # Scan visible text and labels for unclaimed/claimed signals.
         claim_state = await page.evaluate(
             r"""() => {
                 const text = document.body.innerText || '';
                 const labels = Array.from(document.querySelectorAll('[aria-label]'))
                     .map(el => el.getAttribute('aria-label')).join(' ');
                 const all = text + ' ' + labels;
-                // "Claim this business" in several languages; add more as needed
                 const unclaimed = /Claim this business|អះអាង[\s\u200b-\u200d]*ពាណិជ្ជកម្ម[\s\u200b-\u200d]*នេះ|Reclamar este negocio|Gérer cette fiche|认领此商家|Xác nhận doanh nghiệp này/i.test(all);
                 const claimed = /Managed by business owner|Business owner|Owner response|Your business|Manage this business|Verified by business owner/i.test(all);
                 return unclaimed ? 'No' : claimed ? 'Yes' : '';
             }"""
         )
         place.claimed = str(claim_state or "")
-        # Final fallback: look for isClaimed in page JSON
         if not place.claimed and content:
             if re.search(r'"isClaimed"\s*:\s*(?:true|1)', content, re.IGNORECASE):
                 place.claimed = "Yes"
@@ -674,35 +562,27 @@ async def extract_place(page, url: str, territory: str) -> Place:
 # --- exporter ----------------------------------------------------------------
 
 def _resolve_fields(fields: list[str] | None) -> list[str]:
-    if not fields:
-        return OUTPUT_FIELDS
-    return [f for f in fields if f in OUTPUT_FIELDS]
+    return [f for f in fields if f in OUTPUT_FIELDS] if fields else OUTPUT_FIELDS
 
 
-def log_field_coverage(places: list[Place], log: logging.Logger) -> None:
+def log_field_coverage(places: list, log: logging.Logger) -> None:
     """Log how often each output field was populated."""
     if not places:
         return
     total = len(places)
-    coverage: dict[str, float] = {}
-    for field in OUTPUT_FIELDS:
-        filled = sum(1 for p in places if getattr(p, field, "").strip())
-        coverage[field] = round(filled / total * 100, 1)
-    # Summarize into tiers for readable logging
-    high = [f for f, pct in coverage.items() if pct >= 80]
-    medium = [f for f, pct in coverage.items() if 20 <= pct < 80]
-    low = [f for f, pct in coverage.items() if pct < 20]
+    coverage = {
+        f: round(sum(1 for p in places if getattr(p, f, "").strip()) / total * 100, 1)
+        for f in OUTPUT_FIELDS
+    }
     log.info("Field coverage for %d places:", total)
-    log.info("  High (>=80%%): %s", ", ".join(high) if high else "none")
-    log.info("  Medium (20-79%%): %s", ", ".join(medium) if medium else "none")
-    log.info("  Low (<20%%): %s", ", ".join(low) if low else "none")
-    # Always warn about completely missing fields
-    missing = [f for f, pct in coverage.items() if pct == 0]
-    if missing:
+    log.info("  High (>=80%%): %s", ", ".join(f for f, p in coverage.items() if p >= 80) or "none")
+    log.info("  Medium (20-79%%): %s", ", ".join(f for f, p in coverage.items() if 20 <= p < 80) or "none")
+    log.info("  Low (<20%%): %s", ", ".join(f for f, p in coverage.items() if p < 20) or "none")
+    if missing := [f for f, p in coverage.items() if p == 0]:
         log.warning("Fields never populated: %s", ", ".join(missing))
 
 
-def export_csv(places: list[Place], query: str, fields: list[str] | None = None) -> Path:
+def export_csv(places: list, query: str, fields: list[str] | None = None) -> Path:
     cols = _resolve_fields(fields)
     path = DATA_DIR / f"{slugify(query)}.csv"
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
@@ -712,35 +592,32 @@ def export_csv(places: list[Place], query: str, fields: list[str] | None = None)
     return path
 
 
-def export_json(places: list[Place], query: str, fields: list[str] | None = None) -> Path:
+def export_json(places: list, query: str, fields: list[str] | None = None) -> Path:
     cols = _resolve_fields(fields)
     path = DATA_DIR / f"{slugify(query)}.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(
             {"query": query, "count": len(places), "places": [p.to_dict(cols) for p in places]},
-            f,
-            ensure_ascii=False,
-            indent=2,
+            f, ensure_ascii=False, indent=2,
         )
     return path
 
 
-def export_md(places: list[Place], query: str, fields: list[str] | None = None) -> Path:
+def export_md(places: list, query: str, fields: list[str] | None = None) -> Path:
     cols = _resolve_fields(fields)
     path = DATA_DIR / f"{slugify(query)}.md"
     lines = [f"# {query}", "", f"**ទឹកដី:** Cambodia | **សរុប:** {len(places)}", ""]
     for i, p in enumerate(places, 1):
         lines.append(f"## {i}. {p.name or 'គ្មានឈ្មោះ'}")
         for fld in cols:
-            v = getattr(p, fld, "")
-            if v:
+            if v := getattr(p, fld, ""):
                 lines.append(f"- **{fld.replace('_', ' ').title()}:** {v}")
         lines += ["", "---", ""]
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
 
 
-def export_xlsx(places: list[Place], query: str, fields: list[str] | None = None) -> Path:
+def export_xlsx(places: list, query: str, fields: list[str] | None = None) -> Path:
     cols = _resolve_fields(fields)
     path = DATA_DIR / f"{slugify(query)}.xlsx"
     wb = openpyxl.Workbook()
@@ -753,16 +630,11 @@ def export_xlsx(places: list[Place], query: str, fields: list[str] | None = None
     return path
 
 
-_EXPORTERS = {
-    "csv": export_csv,
-    "json": export_json,
-    "md": export_md,
-    "xlsx": export_xlsx,
-}
+_EXPORTERS = {"csv": export_csv, "json": export_json, "md": export_md, "xlsx": export_xlsx}
 
 
-def export_places(places: list[Place], query: str, fmt: str, fields: list[str] | None = None) -> list[Path]:
-    fmts = [f.strip() for f in fmt.split(",")] if fmt != "all" else list(_EXPORTERS.keys())
+def export_places(places: list, query: str, fmt: str, fields: list[str] | None = None) -> list[Path]:
+    fmts = list(_EXPORTERS) if fmt == "all" else [f.strip() for f in fmt.split(",")]
     return [_EXPORTERS[f](places, query, fields) for f in fmts if f in _EXPORTERS]
 
 
@@ -812,11 +684,10 @@ class GmapsScraper:
     def _stopped(self) -> bool:
         return self._stop_event is not None and self._stop_event.is_set()
 
-    async def run(self) -> list[Place]:
+    async def run(self) -> list:
         query = self.cfg.query
         self.log.info("🦊 KhmerFox — %s", query)
         self.log.info("Territory: %s", self.cfg.territory)
-
         async with AsyncCamoufox(**self.cfg.camoufox_kwargs()) as browser:
             urls = await self._collect_urls(browser)
             if self._stopped():
@@ -825,7 +696,6 @@ class GmapsScraper:
             if not urls:
                 self.log.warning("No place URLs found")
                 return []
-
             concurrency = min(self.cfg.concurrency, len(urls))
             self.log.info("Scraping %d places with concurrency %d...", len(urls), concurrency)
             pool = _PagePool(browser, concurrency)
@@ -877,8 +747,7 @@ class GmapsScraper:
                     pass
                 if target and i % 2 == 0:
                     try:
-                        count = await items.count()
-                        if count >= target + buffer:
+                        if await items.count() >= target + buffer:
                             self.log.info("Collected enough result elements for max_results=%d", target)
                             break
                     except Exception:
@@ -898,8 +767,7 @@ class GmapsScraper:
                     break
                 if self.cfg.max_results and len(urls) >= self.cfg.max_results:
                     break
-                href = await items.nth(i).get_attribute("href")
-                if href and href not in seen_hrefs:
+                if (href := await items.nth(i).get_attribute("href")) and href not in seen_hrefs:
                     seen_hrefs.add(href)
                     urls.append(href)
             self.log.info("Collected %d place URLs", len(urls))
@@ -913,7 +781,7 @@ class GmapsScraper:
         finally:
             await page.close()
 
-    async def _scrape_one(self, pool: _PagePool, url: str, idx: int, total: int) -> Place | None:
+    async def _scrape_one(self, pool: _PagePool, url: str, idx: int, total: int):
         page = await pool.get()
         try:
             for attempt in range(self.cfg.retries + 1):

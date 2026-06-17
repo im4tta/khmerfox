@@ -5,21 +5,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 
-from khmerfox.core import Config, GmapsScraper, export_places
+from khmerfox.core import OUTPUT_FIELDS, Config, GmapsScraper, export_places
 
 
-def _env_bool(key: str, default: bool = False) -> bool:
-    import os
-    return os.getenv(key, str(default)).lower() in {"1", "true", "yes", "on"}
-
-
-def _env_int(key: str, default: int = 0) -> int:
-    import os
+def _env(key: str, default):
+    val = os.getenv(key, str(default))
+    if isinstance(default, bool):
+        return val.lower() in {"1", "true", "yes", "on"}
     try:
-        return int(os.getenv(key, str(default)))
-    except ValueError:
+        return type(default)(val)
+    except (ValueError, TypeError):
         return default
 
 
@@ -30,13 +28,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("-q", "--query", default="ហាងកាហ្វេនៅភ្នំពេញ", help="Search query")
     p.add_argument("-t", "--territory", default="Cambodia", help="Territory for normalization")
-    p.add_argument("--headless", default=_env_bool("HEADLESS", True), action=argparse.BooleanOptionalAction)
-    p.add_argument("--max-results", type=int, default=_env_int("MAX_RESULTS", 0))
-    p.add_argument("--concurrency", type=int, default=_env_int("CONCURRENCY", 4))
+    p.add_argument("--headless", default=_env("HEADLESS", True), action=argparse.BooleanOptionalAction)
+    p.add_argument("--max-results", type=int, default=_env("MAX_RESULTS", 0))
+    p.add_argument("--concurrency", type=int, default=_env("CONCURRENCY", 4))
     p.add_argument("--format", default="csv", help="csv,json,md,xlsx,comma-separated,all")
     p.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     p.add_argument("--proxy", default="")
-    p.add_argument("--screenshots", default=_env_bool("SCREENSHOTS", False), action=argparse.BooleanOptionalAction)
+    p.add_argument("--screenshots", default=_env("SCREENSHOTS", False), action=argparse.BooleanOptionalAction)
     p.add_argument("--session", default="default")
     p.add_argument("--scroll-delay", type=float, default=1.0)
     p.add_argument("--page-delay", type=float, default=1.0)
@@ -53,7 +51,6 @@ def _parse_fields(text: str) -> list[str] | None:
     if not text:
         return None
     if text.strip().lower() == "all":
-        from khmerfox.core import OUTPUT_FIELDS
         return list(OUTPUT_FIELDS)
     return [f.strip() for f in text.split(",") if f.strip()]
 
